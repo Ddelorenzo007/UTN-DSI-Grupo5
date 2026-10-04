@@ -1,9 +1,9 @@
-# Actividad 1 — Modelo de Dominio y de Sistema
+# Actividad 1 — Modelo de Dominio
 ## Sistema de Gestión de Estacionamiento UTN FRLP (Grupo 07 — Proyecto Final)
 
-Este documento acompaña al diagrama de clases del modelo de dominio y deja registradas las
-correcciones y justificaciones surgidas de la devolución de la cátedra sobre la primera versión
-entregada (`Entrega1_1.jpg`).
+Este documento acompaña al diagrama de clases del modelo de dominio (`Entrega1.3`) y deja
+registradas las correcciones y justificaciones surgidas de las dos rondas de devolución de la
+cátedra, incorporando también lo aclarado por Grupo 07 en las entrevistas.
 
 ---
 
@@ -40,61 +40,140 @@ Conductor.
 egresar), no un evento puntual de ingreso o egreso por separado. El atributo era redundante con las
 dos fechas y se eliminó, junto con la enumeración `TipoAcceso`.
 
+### 1.4 Se eliminaron los atributos `id` de todo el diagrama
+
+**Observación de la cátedra:** un identificador subrogado es un patrón de mapeo
+objeto-relacional, no un concepto del negocio.
+
+**Corrección:** se sacaron todos los `idX` (idUsuario, idTransaccion, idAcceso, etc.) del modelo de
+dominio. Se mantienen `patente`, `dni` y `email` porque son atributos reales del negocio, no claves
+subrogadas — pertenecen al dominio, a diferencia de un autoincremental de base de datos.
+
+### 1.5 `Descuento` se renombró a `Promoción`
+
+**Observación de la cátedra:** lo que se modelaba como `Descuento` es en realidad una promoción —
+el descuento sería el efecto puntual sobre una transacción, propio de ella, no la regla en sí.
+
+**Corrección:** la clase pasa a llamarse `Promoción` (la regla configurable: porcentaje, montoMínimo,
+vigencia, estado). El efecto puntual del descuento queda representado en `Transacción` mediante el
+atributo `montoExtra`.
+
+### 1.6 `Restricción` y `Anulación` como objetos propios, no atributos sueltos
+
+**Observación de la cátedra:** tanto en `Vehículo` como en `Transacción` había datos que podían no
+existir y que no dependían propiamente de la entidad (`motivoAnulación`, `motivoRestricción`,
+`nivelRestricción`); además, si se anula una transacción debería registrarse quién lo hizo y por qué.
+
+**Corrección:** se crearon las clases `Restricción` (`nivel`, `motivo`, `fecha`) y `Anulación`
+(`motivo`, `fecha`), cada una asociada a `Usuario` (`Usuario "1" --> "0..*" Restriccion/Anulacion`,
+obligatorio: ninguna de las dos puede existir sin quien la generó). `Vehículo` se asocia a
+`Restricción` en `0..1 — 0..1`, y `Transacción` a `Anulación` en `1 — 0..1`.
+
+### 1.7 `cuposDisponibles` y `montoFinal` pasan a ser operaciones, no atributos
+
+**Observación de la cátedra:** si `cuposDisponibles` únicamente se calcula a modo de consulta,
+entonces es un comportamiento, no un atributo derivado.
+
+**Corrección:**
+```
+Estacionamiento:: cuposDisponibles() {
+  return self.capacidadMáxima - (self.Acceso() -> filter(a | a.estaDentro()) -> size())
+}
+Acceso:: estaDentro(): boolean {
+  return self.estado == "Dentro"
+}
+```
+Mismo criterio se aplicó a `Transacción.montoFinal()`, que se calcula como `monto + montoExtra` sin
+necesidad de persistirse aparte, ya que ambos valores quedan congelados en el momento de la
+transacción.
+
+### 1.8 Corrección de multiplicidades
+
+- **`Usuario`–`Anulación`** y **`Transacción`–`Anulación`**: el lado de `Usuario` y de `Transacción`
+  debe ser `1` obligatorio, no `0..1` — una `Anulación` no puede existir sin su transacción ni sin el usuario que la hizo.
+- **`Usuario`–`Notificación`**: el `0..1` (emisor) y el `1` (destinatario) van pegados a `Usuario`,
+  no a `Notificación` — cada notificación tiene como máximo un emisor y exactamente un destinatario,
+  no al revés.
+
 ---
 
-## 2. Decisiones justificadas (se mantienen sin cambios)
+## 2. Decisiones justificadas (se mantienen, con su razón)
 
 ### 2.1 `RegistroAsistencia`
 
-Registra cuándo entra y sale a trabajar cada usuario con rol de personal, y los días trabajados.
-**Aclaración importante:** esta entidad no surge de ningún RF ni HU puntual del documento de
-alcance — fue agregada por el equipo pensando en sustentar métricas de turnos/carga operativa para
-los reportes (RF-024/025). Se consultó a la cátedra si corresponde mantenerla; de mantenerse, se
-asocia directamente a `Usuario` (`Usuario "1" --> "0..*" RegistroAsistencia`), ya que no existe una
-subclase `Empleado` a la cual colgarla.
+Registra cuándo entra y sale a trabajar cada usuario con rol de personal, y los días trabajados. No
+surge de ningún RF ni HU puntual del documento de alcance — se agregó pensando en sustentar métricas
+de turnos/carga operativa para los reportes (RF-024/025). Se asocia directamente a `Usuario`
+(`Usuario "1" --> "0..*" RegistroAsistencia`), ya que no existe una subclase `Empleado` a la cual
+colgarla.
 
-### 2.2 `montoExtra` en `Transaccion`
+### 2.2 `montoExtra` se mantiene como atributo, no como operación
 
-La vigencia de un descuento (`vigenciaDesde`/`vigenciaHasta` en `Descuento`) define el rango de
-fechas en que puede aplicarse, no una propiedad de la transacción en sí. Para que el historial de
-transacciones no dependa del valor *actual* de un `Descuento` (que podría cambiar más adelante), se
-agregó `montoExtra: float` y `montoFinal: float` a `Transaccion`, que congela el beneficio efectivamente
-otorgado en el momento.
+A diferencia de `montoFinal`, `montoExtra` depende de `Promoción.porcentaje`, que puede seguir
+cambiando en el tiempo (un administrador puede editar o desactivar una promoción). Si se calculara
+al vuelo en vez de guardarse, las transacciones históricas cambiarían de valor cada vez que cambie
+la promoción — por eso se "fotografía" el monto bonificado en el momento de aplicarse.
 
-### 2.3 `nivelRestriccion` en `Vehiculo`
+### 2.3 Niveles de restricción (`Leve`/`Crítica`) en `Restricción`
 
 **Justificación (HU-032.3):** *"Bloqueo del botón 'Confirmar Ingreso' si la restricción es de
-carácter crítico"*. Esto implica que existen niveles de restricción (no todas bloquean el ingreso),
-por lo que se usa la enumeración `NivelRestriccion {Ninguna, Leve, Critica}` en vez de un booleano
-simple.
+carácter crítico"*. Implica que existen niveles de restricción (no todas bloquean el ingreso), por
+eso se usa una enumeración en vez de un booleano simple.
 
-**No se modela un historial de restricciones como clase aparte:** se revisó todo el documento de
-Historias de Usuario y el RF-032 original, y no hay ningún requerimiento que pida consultar
-restricciones pasadas, quién las aplicó o cuándo se levantaron. HU-032 solo describe una evaluación
-sobre el estado *actual* del vehículo. Agregar una clase `Restriccion` con historial sería
-estructura no solicitada por el negocio — mismo tipo de error señalado por la cátedra con
-`Autoridad`.
-
-### 2.4 `RegistroInvitado` como entidad separada de `Vehiculo`
+### 2.4 `RegistroInvitado` como entidad separada de `Vehículo`
 
 **Justificación (HU-018.1):** el sistema debe solicitar obligatoriamente "Nombre, Apellido, Patente
-y Detalle/Motivo" del invitado — la patente ya vive en `Vehiculo`, pero el nombre y apellido de la
-persona son datos de identidad distintos del vehículo en sí, por lo que se modelan en una entidad
-separada asociada `0..1 — 0..1`.
+y Detalle/Motivo" del invitado — el nombre y apellido de la persona son datos de identidad distintos
+del vehículo en sí. Además, `Vehiculo "1" --> "0..*" RegistroInvitado`, porque un mismo vehículo
+puede ser usado por distintas personas en distintas visitas; para saber cuál invitado corresponde a
+cada acceso puntual, se agregó `Acceso "0..1" --> "0..1" RegistroInvitado`.
 
-### 2.5 `cuposDisponibles` en `Estacionamiento` como atributo calculado
+### 2.5 `marca`, `modelo` y `color` opcionales en `Vehículo`
 
-No se persiste como contador que se actualiza manualmente (generaría inconsistencias ante fallos o
-accesos simultáneos). Se calcula como:
+Un vehículo invitado se registra solo con la patente (HU-018.1); el resto de los datos se completa
+únicamente si, más adelante, el vehículo se asocia formalmente a un conductor (HU-005).
 
-```
-cuposDisponibles = capacidadMaxima − cantidad de Acceso con estado "Dentro" para ese Estacionamiento
-```
+### 2.6 Dos asociaciones `Usuario`–`Acceso` (ingreso y egreso)
+
+**Justificación (HU-033.1):** el detalle de un acceso debe mostrar por separado qué operador
+registró el ingreso y cuál el egreso — pueden ser personas distintas por cambio de turno. El modelo
+no registra, en cambio, quién *conducía* el vehículo: eso se obtiene indirectamente vía
+`Vehículo → Usuario` (dueño) o `Vehículo → RegistroInvitado`, igual que una barrera real que
+identifica por patente, no por ocupante — ningún RF pide lo segundo.
+
+### 2.7 `Promoción.activa` y `Estacionamiento.cerradoManual` como booleanos independientes
+
+**Justificación (HU-014.2 y HU-013.4):** en ambos casos la historia de usuario plantea dos
+condiciones independientes con un "Y"/"O" explícito: una promoción es válida si está dentro de su
+vigencia por fecha **y** además tiene el switch en `Activa` (permite pausarla manualmente sin perder
+la fecha de vencimiento configurada); un estacionamiento se considera cerrado si está fuera de
+horario **o** fue marcado como cerrado manualmente (para excepciones puntuales: obras, cortes de
+luz, eventos). Ninguno de los dos booleanos duplica a la otra condición.
+
+### 2.8 `cuposDisponibles` no distingue invitados de conductores registrados
+
+El cálculo cuenta todos los `Acceso` con estado `Dentro` de un `Estacionamiento`, sin pasar por
+`RegistroInvitado`: un lugar ocupado por un invitado ocupa el mismo espacio físico que uno ocupado
+por un conductor registrado, así que no hace falta esa distinción para el cupo.
+
+### 2.9 ¿Una cuenta puede estar inactiva? ¿Cómo reflejan esa situación?
+
+No se modela un estado independiente en Cuenta. Consultado con Grupo 07, confirmaron que el saldo
+y el estado pertenecen al Usuario, no a la cuenta en sí: si el usuario no está en estado Activo
+(Bloqueado o Deshabilitado), no puede iniciar sesión y en garita se le bloquea el ingreso, por lo
+que tampoco se le debita. Solo un administrador puede rehabilitarlo. Por eso Cuenta solo tiene
+saldoActual, y el control de inactividad se resuelve consultando Usuario.estado antes de operar
+sobre la cuenta asociada.
+
+---
 
 ## 3. Fuentes utilizadas
 
 - Plan de Gestión del Alcance — Estacionamiento UTN (Grupo 07)
 - Matriz de Trazabilidad de Requerimientos (criterios de aceptación)
 - Documento de Historias de Usuario (HU-001 a HU-038)
-- Entrevista con Grupo 07 (respuestas por mail sobre invitados, saldo, accesos y cupos)
-- Devolución de la cátedra (Demian) sobre `Entrega1_1.jpg`
+- Primera entrevista con Grupo 07, por mail (invitados, saldo, accesos y cupos)
+- Segunda entrevista con Grupo 07, por mail (estado de cuenta, autoría de restricciones,
+  terminología Promoción/Descuento)
+- Primera corrección de la cátedra (Demian) sobre `Entrega1.1`
+- Segunda corrección de la cátedra (Demian) sobre `Entrega1.3`
